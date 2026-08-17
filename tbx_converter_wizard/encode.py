@@ -12,14 +12,27 @@ class EncodeError(RuntimeError):
     pass
 
 
+def write_concat_file(vobs: list[Path], concat_path: Path) -> None:
+    """Write an ffmpeg concat-demuxer list for an explicit, ordered set of VOBs.
+
+    Paths are written with forward slashes. ffmpeg's concat demuxer treats a
+    backslash as an escape character inside the quoted filename, so a Windows
+    path like D:\\VIDEO_TS\\VTS_03_1.VOB is mangled before it ever reaches the
+    filesystem. Forward slashes work on Windows too, so this is just the
+    portable spelling rather than a platform special case.
+    """
+    if not vobs:
+        raise EncodeError("no VOB files to concatenate")
+    lines = "".join(f"file '{str(v).replace(chr(92), '/')}'\n" for v in vobs)
+    concat_path.write_text(lines, encoding="utf-8")
+
+
 def build_concat_file(vob_dir: Path, concat_path: Path) -> None:
     """Build an ffmpeg concat-demuxer list from a title's VOB files (skips menu-only _0.VOB)."""
     vobs = sorted(vob_dir.glob("VTS_*_[1-9]*.VOB"))
     if not vobs:
         raise EncodeError(f"no VOB files found in {vob_dir}")
-    with concat_path.open("w") as f:
-        for vob in vobs:
-            f.write(f"file '{vob}'\n")
+    write_concat_file(vobs, concat_path)
 
 
 def _ffmpeg_cmd(input_args: list[str], tmp_path: Path) -> list[str]:

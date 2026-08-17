@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import config, encode, naming, rip
+from . import config, encode, naming, rip, videots
 
 
 class RipCancelled(Exception):
@@ -67,6 +67,27 @@ def rip_and_encode(device: str, item: PlannedTitle, ripper: str,
     final_path = config.OUTPUT_DIR / item.filename
 
     try:
+        if ripper == "videots":
+            # Nothing to extract: the disc is mounted, so its VOBs are already
+            # ordinary readable files and the encoder can read them in place.
+            # This is the route for a disc the other rippers refuse - a damaged
+            # burn MakeMKV judges unsound, or any disc at all on a machine
+            # without MakeMKV or dvdbackup.
+            scratch_dir.mkdir(parents=True, exist_ok=True)
+            log(f"Reading title {item.title_number} from the mounted disc "
+                f"({item.length_seconds / 60:.1f} min)...")
+            concat_path = scratch_dir / "concat.txt"
+            encode.write_concat_file(videots.title_vobs(Path(device), item.title_number),
+                                      concat_path)
+
+            if should_cancel():
+                raise RipCancelled()
+
+            log(f"Encoding -> {item.filename}")
+            encode.encode_concat_to_output(concat_path, final_path, log, item.length_seconds)
+            log(f"Done: {final_path}")
+            return final_path
+
         log(f"Extracting title {item.title_number} ({item.length_seconds / 60:.1f} min)...")
         source = rip.extract_title(device, item.title_number, scratch_dir, ripper)
 

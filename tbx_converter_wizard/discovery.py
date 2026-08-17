@@ -107,17 +107,23 @@ _DRIVE_SCAN_TIMEOUT = 120
 _TITLE_SCAN_TIMEOUT = 900
 
 # MakeMKV applies its own minimum-title-length filter before it reports
-# anything. On a real test disc that silently hid the 89-minute main feature
-# while still listing a 23-minute extra, so the disc looked like it held
-# nothing but a short clip. This app already has a length filter of its own -
-# the "Min length to include" box - and it can only filter what it is told
-# about, so MakeMKV must hand over everything and let the app decide.
+# anything. This app already has a length filter of its own - the "Min length
+# to include" box - and it can only filter what it is told about, so MakeMKV
+# hands over everything and the app decides. That keeps one control, in the
+# GUI, as the single place title length is judged.
+#
+# Do NOT take this to mean the flag surfaces titles MakeMKV would otherwise
+# refuse. It was originally added on that belief, after a single scan with it
+# reported a long title that scans without it did not; re-testing on the same
+# disc showed the same one-title result either way, so that reading was noise.
+# MakeMKV declines structurally damaged titles regardless of length, and no
+# flag argues it out of that.
 #
 # This MUST be passed identically to `info` and `mkv`. MakeMKV numbers titles
 # by position in the *filtered* list, so scanning with this flag and ripping
-# without it silently rips a different title than the one selected: on that
-# same disc, picking the 89-minute feature would have produced the 23-minute
-# extra instead, with nothing anywhere reporting a problem.
+# without it would silently rip a different title than the one selected, with
+# nothing anywhere reporting a problem. That hazard is real whatever value the
+# flag carries, which is what test_both_filter_identically pins down.
 MIN_LENGTH_ARG = "--minlength=0"
 
 

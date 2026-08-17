@@ -16,7 +16,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import config, discovery, encode, engine
+from . import config, discovery, encode, engine, videots
 
 APP_TITLE = "TBX Converter Wizard"
 
@@ -25,9 +25,11 @@ def _dvdbackup_available() -> bool:
     return shutil.which("dvdbackup") is not None and shutil.which("lsdvd") is not None
 
 
-# Either backend counts - dvdbackup+lsdvd (Linux only) or MakeMKV (any
-# platform, including Windows, where it's the only option available).
-DVD_TOOLS_AVAILABLE = _dvdbackup_available() or discovery.find_makemkvcon() is not None
+# Always true now: reading a mounted VIDEO_TS folder needs nothing beyond
+# ffmpeg, which the Convert File tab already requires, so there is always at
+# least one working ripper. dvdbackup and MakeMKV are offered in addition
+# when their tools are present.
+DVD_TOOLS_AVAILABLE = True
 
 
 def _probe_duration_seconds(path: Path) -> float:
@@ -333,8 +335,16 @@ class ConverterApp(tk.Tk):
         self.tv_season = tk.StringVar()
         self.tv_start_episode = tk.StringVar()
         self.min_minutes = tk.StringVar(value=str(config.DEFAULT_MIN_MINUTES["movie"]))
-        has_dvdbackup = _dvdbackup_available()
-        ripper_values = ["dvdbackup", "makemkv"] if has_dvdbackup else ["makemkv"]
+        # Order sets the default. dvdbackup and MakeMKV decrypt CSS and read
+        # the disc's authored title structure, so prefer them when present;
+        # videots is the fallback that needs no tools at all and works on a
+        # disc the others refuse.
+        ripper_values = []
+        if _dvdbackup_available():
+            ripper_values.append("dvdbackup")
+        if discovery.find_makemkvcon() is not None:
+            ripper_values.append("makemkv")
+        ripper_values.append("videots")
         self.ripper = tk.StringVar(value=ripper_values[0])
 
         top = ttk.Frame(parent)
@@ -438,6 +448,12 @@ class ConverterApp(tk.Tk):
                 if ripper == "dvdbackup":
                     for path in sorted(Path("/dev").glob("sr*")):
                         options[str(path)] = str(path)
+                elif ripper == "videots":
+                    for d in videots.find_mounted_discs():
+                        label = d.device_path
+                        if d.disc_title:
+                            label += f" ({d.disc_title})"
+                        options[label] = d.device_path
                 else:
                     for d in discovery.list_makemkv_drives():
                         label = f"{d.device_path or f'Drive {d.index}'} - {d.name}"
@@ -557,6 +573,8 @@ class ConverterApp(tk.Tk):
             try:
                 if ripper == "makemkv":
                     titles = discovery.discover_titles_makemkv(int(device))
+                elif ripper == "videots":
+                    titles = videots.discover_titles(Path(device))
                 else:
                     titles = discovery.discover_titles(device)
                 self.items = [

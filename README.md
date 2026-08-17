@@ -8,9 +8,10 @@ A small desktop app with two things it can do:
   `Show SxxExx.mp4`), one after another, straight into a local output folder.
 - **Rip DVD** - insert a DVD you own, pick a drive, scan it, pick which
   titles to keep, click **Run**. Same encode profile, same output folder,
-  just sourced from a disc instead of files you already have. Works on
-  Windows, macOS, and Linux via MakeMKV; Linux also has a `dvdbackup`/`lsdvd`
-  option. This tab disables itself automatically if neither is available.
+  just sourced from a disc instead of files you already have. Three rippers
+  are offered: `makemkv` (any platform), `dvdbackup` (Linux only), and
+  `videots`, which reads a mounted disc's `VIDEO_TS` folder using nothing but
+  ffmpeg - so this tab always works, whatever else is installed.
 
 This app has **no network awareness of TBX at all**. It never talks to your
 TBX box, never uploads anything, doesn't need an API key or your TBX's
@@ -76,13 +77,39 @@ or `python3 -m tbx_converter_wizard.gui` directly (Windows: `python -m tbx_conve
 
 ### MakeMKV (DVD ripping only)
 
-MakeMKV is the only ripper on Windows/macOS, and an alternative to
-`dvdbackup` on Linux for discs that use protection beyond plain CSS
+MakeMKV is the only ripper that decrypts CSS on Windows/macOS, and an
+alternative to `dvdbackup` on Linux for discs that use protection beyond plain CSS
 (ARccOS, RipGuard, newer CSS variants, or just discs `dvdbackup` reports as
 unreadable). Install it from MakeMKV's own site (Linux: build
 `makemkv-oss` + `makemkv-bin` from their forever-free beta; Windows/macOS:
 the regular installer). In the app, switch the **Ripper** dropdown to
 `makemkv` before scanning/ripping.
+
+### The `videots` ripper - for discs the others refuse
+
+Set **Ripper** to `videots` when a disc is readable but the other rippers
+won't produce it. It needs no tools beyond ffmpeg: the mounted disc already
+exposes its VOBs as ordinary files, so it reads them where they lie, with no
+extraction step and no scratch copy.
+
+Use it when:
+
+- **MakeMKV lists fewer titles than the disc holds.** MakeMKV declines titles
+  whose structure it judges unsound, which includes a title damaged by a bad
+  burn - common on DVD+R DL - even though every byte is readable. ffmpeg
+  decodes the damaged frames, logs them, and keeps going, so you get a copy
+  with artefacts instead of no copy at all.
+- **Neither MakeMKV nor dvdbackup is installed.**
+
+Two limits. It cannot read CSS-encrypted commercial discs, since it does no
+decryption - use MakeMKV, or dvdbackup with `libdvdcss2`, for those. And it
+treats each title set (`VTS_nn`) as one title, so a disc that authors several
+programmes into one title set yields them joined rather than separate.
+
+Title lengths come from the disc's IFO files, which carry the authored
+playback time exactly. They are deliberately not probed from the VOBs: a VOB
+is a raw MPEG-2 stream with no container index, and ffprobe's estimate on one
+is wrong by orders of magnitude.
 
 **Troubleshooting a rip that fails with an unclear error:** MakeMKV's free
 build requires a periodically-renewed license key. An expired key can make
