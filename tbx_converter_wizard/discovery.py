@@ -112,7 +112,23 @@ def list_makemkv_drives() -> list[Drive]:
     except subprocess.TimeoutExpired as exc:
         raise DiscoveryError("makemkvcon timed out scanning for drives") from exc
 
-    return _parse_drv_lines(result.stdout)
+    # Previously unchecked here - a nonzero exit (e.g. MakeMKV's license
+    # agreement not yet accepted, which it prompts for on first run) meant
+    # this silently returned an empty list with no feedback anywhere, which
+    # looks identical in the UI to "no drive was found" - drop the same
+    # returncode check discover_titles() already does for lsdvd.
+    if result.returncode != 0:
+        detail = (result.stdout.strip() + "\n" + result.stderr.strip()).strip()[-500:]
+        raise DiscoveryError(f"makemkvcon failed scanning for drives (exit {result.returncode}): {detail}")
+
+    drives = _parse_drv_lines(result.stdout)
+    if not drives:
+        detail = (result.stdout.strip() + "\n" + result.stderr.strip()).strip()[-500:]
+        raise DiscoveryError(
+            "makemkvcon ran but found no optical drives - is one connected, and does "
+            f"Windows itself see it? Raw output:\n{detail}"
+        )
+    return drives
 
 
 def _parse_drv_lines(text: str) -> list[Drive]:
