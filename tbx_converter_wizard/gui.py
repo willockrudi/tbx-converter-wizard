@@ -72,6 +72,12 @@ class ConverterApp(tk.Tk):
         # scan fails - typically at startup, where it scrolls away long
         # before anyone clicks Scan Disc and wonders why nothing works.
         self._last_drive_error: str | None = None
+        # Only one makemkvcon may touch the optical drive at a time. A second
+        # one started while a scan or rip is in flight does not queue politely:
+        # it blocks on the busy drive until it hits its own timeout, and drags
+        # down the operation it collided with, so both appear to fail. Guards
+        # every drive-touching entry point below.
+        self._disc_busy = False
 
         self.output_dir = tk.StringVar(value=str(config.OUTPUT_DIR))
 
@@ -336,7 +342,9 @@ class ConverterApp(tk.Tk):
         ttk.Label(top, text="Drive:").pack(side="left")
         self.drive_combo = ttk.Combobox(top, textvariable=self.device, width=40, state="readonly")
         self.drive_combo.pack(side="left", padx=4)
-        ttk.Button(top, text="Refresh Drives", command=self._refresh_drives).pack(side="left", padx=4)
+        self.refresh_button = ttk.Button(top, text="Refresh Drives",
+                                          command=self._refresh_drives)
+        self.refresh_button.pack(side="left", padx=4)
         self.scan_button = ttk.Button(top, text="Scan Disc", command=self._on_scan)
         self.scan_button.pack(side="left", padx=4)
         ttk.Label(top, text="Ripper:").pack(side="left", padx=(16, 0))
@@ -416,6 +424,11 @@ class ConverterApp(tk.Tk):
         """Populate the drive dropdown for whichever ripper is currently
         selected. Runs on a background thread since MakeMKV's own drive
         scan shells out to makemkvcon and can take a few seconds."""
+        if self._disc_busy:
+            self._log("Drive is busy - wait for the current scan or rip to finish.")
+            return
+        self._disc_busy = True
+
         ripper = self.ripper.get()
         self.drive_combo.configure(state="disabled")
 
@@ -436,8 +449,10 @@ class ConverterApp(tk.Tk):
                 self._log(f"Drive scan failed: {exc}")
             else:
                 self._last_drive_error = None
-            self._drive_options = options
-            self._need_drive_refresh = True
+            finally:
+                self._drive_options = options
+                self._need_drive_refresh = True
+                self._disc_busy = False
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -518,7 +533,12 @@ class ConverterApp(tk.Tk):
             messagebox.showerror(APP_TITLE, self._no_drive_message())
             return
 
+        if self._disc_busy:
+            self._log("Drive is busy - wait for the current drive refresh to finish.")
+            return
+
         self._scanning = True
+        self._disc_busy = True
         self.scan_button.configure(state="disabled")
 
         ripper = self.ripper.get()
@@ -564,6 +584,7 @@ class ConverterApp(tk.Tk):
                 self._log(f"Scan failed unexpectedly: {exc!r}")
             finally:
                 self._need_scan_button_reset = True
+                self._disc_busy = False
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -611,8 +632,13 @@ class ConverterApp(tk.Tk):
         if not included:
             return
 
+        if self._disc_busy:
+            self._log("Drive is busy - wait for the current scan to finish.")
+            return
+
         ripper = self.ripper.get()
         self.cancel_event.clear()
+        self._disc_busy = True
         self.rip_button.configure(state="disabled")
         self.dvd_cancel_button.configure(state="normal")
 
@@ -625,6 +651,7 @@ class ConverterApp(tk.Tk):
                 self._log(f"Rip failed unexpectedly: {exc!r}")
             finally:
                 self._need_worker_done = True
+                self._disc_busy = False
 
         self.worker = threading.Thread(target=work, daemon=True)
         self.worker.start()
@@ -667,6 +694,15 @@ class ConverterApp(tk.Tk):
         if self._need_worker_done:
             self._need_worker_done = False
             self._on_worker_done()
+
+        # Keep Refresh Drives in step with whether the drive is in use, so a
+        # click that could only collide isn't offered in the first place. The
+        # guards in the handlers are still the real defence - the ripper
+        # dropdown also triggers a refresh, and that isn't a button.
+        if DVD_TOOLS_AVAILABLE:
+            want = "disabled" if self._disc_busy else "normal"
+            if str(self.refresh_button.cget("state")) != want:
+                self.refresh_button.configure(state=want)
 
         self.after(200, self._poll_worker_state)
 

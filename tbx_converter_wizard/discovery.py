@@ -106,6 +106,20 @@ _DRV_STATUS_DISC_PRESENT = (2, 3)  # closed (has disc) / loading
 _DRIVE_SCAN_TIMEOUT = 120
 _TITLE_SCAN_TIMEOUT = 900
 
+# MakeMKV applies its own minimum-title-length filter before it reports
+# anything. On a real test disc that silently hid the 89-minute main feature
+# while still listing a 23-minute extra, so the disc looked like it held
+# nothing but a short clip. This app already has a length filter of its own -
+# the "Min length to include" box - and it can only filter what it is told
+# about, so MakeMKV must hand over everything and let the app decide.
+#
+# This MUST be passed identically to `info` and `mkv`. MakeMKV numbers titles
+# by position in the *filtered* list, so scanning with this flag and ripping
+# without it silently rips a different title than the one selected: on that
+# same disc, picking the 89-minute feature would have produced the 23-minute
+# extra instead, with nothing anywhere reporting a problem.
+MIN_LENGTH_ARG = "--minlength=0"
+
 
 def list_makemkv_drives() -> list[Drive]:
     """Enumerate optical drives via MakeMKV's own robot-mode scan - this
@@ -190,7 +204,7 @@ def discover_titles_makemkv(drive_index: int) -> list[Title]:
         raise DiscoveryError("makemkvcon not found - install MakeMKV, see README")
     try:
         result = subprocess.run(
-            [makemkvcon, "-r", "info", f"disc:{drive_index}"],
+            [makemkvcon, "-r", MIN_LENGTH_ARG, "info", f"disc:{drive_index}"],
             capture_output=True, text=True, errors="replace",
             timeout=_TITLE_SCAN_TIMEOUT, creationflags=config.NO_WINDOW,
         )

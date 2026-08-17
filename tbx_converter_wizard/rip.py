@@ -59,7 +59,11 @@ def _extract_makemkv(device: str, title_number: int, scratch_dir: Path) -> Path:
     if makemkvcon is None:
         raise RipError("makemkvcon not found - MakeMKV must be installed manually, see README")
 
-    cmd = [makemkvcon, "mkv", f"disc:{device}", str(title_number - 1), str(scratch_dir)]
+    # discovery.MIN_LENGTH_ARG must match the flag used when the titles were
+    # enumerated - MakeMKV numbers titles by position in the filtered list, so
+    # a mismatch here rips a different title than the user selected, silently.
+    cmd = [makemkvcon, discovery.MIN_LENGTH_ARG, "mkv", f"disc:{device}",
+           str(title_number - 1), str(scratch_dir)]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
                                 timeout=3600, creationflags=config.NO_WINDOW)

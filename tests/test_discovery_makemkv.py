@@ -1,9 +1,13 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from tbx_converter_wizard import discovery, rip
 from tbx_converter_wizard.discovery import Drive, Title, _parse_drv_lines, _parse_hms, _parse_tinfo_lines
 
 
@@ -69,6 +73,46 @@ class TestParseTinfoLines(unittest.TestCase):
 
     def test_no_titles_returns_empty_list(self):
         self.assertEqual(_parse_tinfo_lines("MSG:1005,0,1,\"scanning\"\n"), [])
+
+
+class TestMinLengthFlagConsistency(unittest.TestCase):
+    """MakeMKV filters titles by its own minimum length before reporting them,
+    and numbers what survives by position in that filtered list. So `info` and
+    `mkv` must filter identically: scan with the flag and rip without it, and
+    MakeMKV hands back a different title than the user picked, with nothing
+    anywhere reporting a problem. On the disc this was found with, choosing
+    the 89-minute feature would have quietly produced a 23-minute extra.
+    """
+
+    @patch("tbx_converter_wizard.discovery.find_makemkvcon", return_value="makemkvcon")
+    @patch("tbx_converter_wizard.discovery.subprocess.run")
+    def _info_cmd(self, mock_run, _mock_find):
+        mock_run.return_value = SimpleNamespace(
+            returncode=0, stdout='TINFO:0,9,0,"0:10:00"\n', stderr="")
+        discovery.discover_titles_makemkv(0)
+        return mock_run.call_args[0][0]
+
+    @patch("tbx_converter_wizard.rip.discovery.find_makemkvcon", return_value="makemkvcon")
+    @patch("tbx_converter_wizard.rip.subprocess.run")
+    def _mkv_cmd(self, mock_run, _mock_find):
+        mock_run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            (scratch / "title_t00.mkv").write_bytes(b"")
+            rip._extract_makemkv("0", 1, scratch)
+        return mock_run.call_args[0][0]
+
+    def test_info_passes_min_length(self):
+        self.assertIn(discovery.MIN_LENGTH_ARG, self._info_cmd())
+
+    def test_mkv_passes_min_length(self):
+        self.assertIn(discovery.MIN_LENGTH_ARG, self._mkv_cmd())
+
+    def test_both_filter_identically(self):
+        def minlength_args(cmd):
+            return [a for a in cmd if str(a).startswith("--minlength")]
+
+        self.assertEqual(minlength_args(self._info_cmd()), minlength_args(self._mkv_cmd()))
 
 
 class TestParseHms(unittest.TestCase):

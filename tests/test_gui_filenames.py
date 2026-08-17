@@ -11,6 +11,7 @@ import sys
 import tkinter as tk
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -33,17 +34,32 @@ def _tk_usable() -> bool:
 TK_AVAILABLE = _tk_usable()
 
 
+def _make_app(testcase):
+    """Build a ConverterApp without touching real hardware.
+
+    ConverterApp.__init__ kicks off a drive scan, which shells out to
+    makemkvcon against the actual optical drive. Left unstubbed, every test
+    case here spawns its own - a dozen piled up on the first real run,
+    contending for the drive and slowing each other down, which is precisely
+    the failure TestDiscBusyGuard exists to prevent. Patched across
+    construction only, so tests that need the real method still get it.
+    """
+    with patch.object(gui.ConverterApp, "_refresh_drives", lambda self: None):
+        app = gui.ConverterApp()
+    app.withdraw()
+    testcase.addCleanup(app.destroy)
+    return app
+
+
 @unittest.skipUnless(TK_AVAILABLE, "no display available for tkinter")
 class TestConvertTabFilenames(unittest.TestCase):
     def setUp(self):
-        self.app = gui.ConverterApp()
-        self.app.withdraw()
+        self.app = _make_app(self)
         self.app.convert_files = [Path("clip.mkv")]
         self.app.convert_items = [PlannedTitle(title_number=0, length_seconds=600.0)]
         # Stands in for the file-probe thread finishing while the metadata
         # fields are still empty - the exact moment the stale name was baked in.
         self.app._recompute_convert()
-        self.addCleanup(self.app.destroy)
 
     def filename(self) -> str:
         return self.app.convert_items[0].filename
@@ -93,9 +109,7 @@ class TestDriveResolution(unittest.TestCase):
     bare ValueError from inside the scan thread."""
 
     def setUp(self):
-        self.app = gui.ConverterApp()
-        self.app.withdraw()
-        self.addCleanup(self.app.destroy)
+        self.app = _make_app(self)
 
     def test_empty_dropdown_resolves_to_none(self):
         self.app._drive_options = {}
@@ -116,6 +130,51 @@ class TestDriveResolution(unittest.TestCase):
     def test_message_repeats_last_scan_failure(self):
         self.app._last_drive_error = "makemkvcon failed (exit 253): too old"
         self.assertIn("exit 253", self.app._no_drive_message())
+
+
+@unittest.skipUnless(TK_AVAILABLE, "no display available for tkinter")
+@unittest.skipUnless(gui.DVD_TOOLS_AVAILABLE, "no DVD ripper installed")
+class TestDiscBusyGuard(unittest.TestCase):
+    """Only one makemkvcon may touch the drive at a time. A second one started
+    while a scan is in flight doesn't queue - it blocks on the busy drive until
+    it hits its own timeout, and slows the operation it collided with, so both
+    look broken. Observed for real: four Refresh Drives clicks during a title
+    scan produced four 120s timeouts and stretched the scan past 2.7 minutes.
+    """
+
+    def setUp(self):
+        self.app = _make_app(self)
+        self.app._drive_options = {"D: - Some Drive": "0"}
+        self.app.device.set("D: - Some Drive")
+        self.app.ripper.set("makemkv")
+
+    @patch("tbx_converter_wizard.gui.threading.Thread")
+    def test_refresh_declines_while_busy(self, mock_thread):
+        self.app._disc_busy = True
+        self.app._refresh_drives()
+        mock_thread.assert_not_called()
+
+    @patch("tbx_converter_wizard.gui.threading.Thread")
+    def test_scan_declines_while_busy(self, mock_thread):
+        self.app._disc_busy = True
+        self.app._on_scan()
+        mock_thread.assert_not_called()
+
+    @patch("tbx_converter_wizard.gui.threading.Thread")
+    def test_refresh_proceeds_when_idle(self, mock_thread):
+        """Guard against the opposite failure - a latch that never releases
+        would make the drive permanently unusable rather than merely slow."""
+        self.app._disc_busy = False
+        self.app._refresh_drives()
+        mock_thread.assert_called_once()
+        self.assertTrue(self.app._disc_busy)
+
+    @patch("tbx_converter_wizard.gui.threading.Thread")
+    def test_scan_marks_drive_busy(self, mock_thread):
+        self.app._disc_busy = False
+        self.app._on_scan()
+        mock_thread.assert_called_once()
+        self.assertTrue(self.app._disc_busy)
 
 
 if __name__ == "__main__":
