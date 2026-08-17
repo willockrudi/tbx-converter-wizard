@@ -96,6 +96,16 @@ def discover_titles(device: str) -> list[Title]:
 _DRV_STATUS_NOT_ATTACHED = 256
 _DRV_STATUS_DISC_PRESENT = (2, 3)  # closed (has disc) / loading
 
+# MakeMKV title scans are slow, and the old 60s ceiling was well under what a
+# real disc takes: a single 23-minute title on a healthy home-burned DVD+R-DL
+# measured 76s on a USB drive - and that is close to a best case. Commercial
+# discs have many more titles, CSS to work through, and often trigger the
+# drive's region workaround, all of which add minutes. Worse, blowing the
+# timeout raised "is a disc inserted?", which blamed the user for the one
+# thing that was definitely fine.
+_DRIVE_SCAN_TIMEOUT = 120
+_TITLE_SCAN_TIMEOUT = 900
+
 
 def list_makemkv_drives() -> list[Drive]:
     """Enumerate optical drives via MakeMKV's own robot-mode scan - this
@@ -108,13 +118,17 @@ def list_makemkv_drives() -> list[Drive]:
     try:
         result = subprocess.run(
             [makemkvcon, "-r", "--cache=1", "info", "disc:9999"],
-            capture_output=True, text=True, errors="replace", timeout=30,
-            creationflags=config.NO_WINDOW,
+            capture_output=True, text=True, errors="replace",
+            timeout=_DRIVE_SCAN_TIMEOUT, creationflags=config.NO_WINDOW,
         )
     except FileNotFoundError as exc:
         raise DiscoveryError("makemkvcon not found - install MakeMKV, see README") from exc
     except subprocess.TimeoutExpired as exc:
-        raise DiscoveryError("makemkvcon timed out scanning for drives") from exc
+        raise DiscoveryError(
+            f"makemkvcon timed out after {_DRIVE_SCAN_TIMEOUT}s scanning for drives. "
+            "A USB optical drive that has gone to sleep can take a while to spin up - "
+            "try again."
+        ) from exc
 
     # Previously unchecked here - a nonzero exit (e.g. MakeMKV's license
     # agreement not yet accepted, which it prompts for on first run) meant
@@ -177,13 +191,18 @@ def discover_titles_makemkv(drive_index: int) -> list[Title]:
     try:
         result = subprocess.run(
             [makemkvcon, "-r", "info", f"disc:{drive_index}"],
-            capture_output=True, text=True, errors="replace", timeout=60,
-            creationflags=config.NO_WINDOW,
+            capture_output=True, text=True, errors="replace",
+            timeout=_TITLE_SCAN_TIMEOUT, creationflags=config.NO_WINDOW,
         )
     except FileNotFoundError as exc:
         raise DiscoveryError("makemkvcon not found - install MakeMKV, see README") from exc
     except subprocess.TimeoutExpired as exc:
-        raise DiscoveryError(f"makemkvcon timed out reading drive {drive_index} - is a disc inserted?") from exc
+        raise DiscoveryError(
+            f"makemkvcon timed out after {_TITLE_SCAN_TIMEOUT}s reading drive "
+            f"{drive_index}. Scanning a disc routinely takes a minute or two; a "
+            "scratched or dirty one can take far longer or stall outright. Try "
+            "cleaning the disc, or another drive."
+        ) from exc
 
     titles = _parse_tinfo_lines(result.stdout)
     if not titles:

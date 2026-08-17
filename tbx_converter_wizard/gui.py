@@ -526,7 +526,7 @@ class ConverterApp(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         self.items = []
         self.rip_button.configure(state="disabled")
-        self._log(f"Scanning {self.device.get()} ...")
+        self._log(f"Scanning {self.device.get()} ... (this can take a minute or two)")
 
         def work():
             # Safety net: any unexpected exception here must still reach the
@@ -545,6 +545,18 @@ class ConverterApp(tk.Tk):
                     for t in titles
                 ]
                 self._log(f"Found {len(self.items)} title(s).")
+                # A scan that finds titles but auto-includes none leaves Run
+                # greyed out with nothing on screen explaining why - and the
+                # movie-mode default of 40 min excludes anything short, which
+                # is most TV episodes and plenty of home-burned discs.
+                if self.items and not any(it.include for it in self.items):
+                    longest = max(it.length_seconds for it in self.items) / 60
+                    self._log(
+                        f"  ...but none reach the {threshold / 60:.0f} min minimum "
+                        f"(longest is {longest:.1f} min), so nothing is selected and Run "
+                        "stays disabled. Lower 'Min length to include' and click Apply, "
+                        "or click a row's Include cell to select it by hand."
+                    )
                 self._need_recompute = True
             except discovery.DiscoveryError as exc:
                 self._log(f"Scan failed: {exc}")
