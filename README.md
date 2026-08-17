@@ -6,10 +6,11 @@ A small desktop app with two things it can do:
   fill in a movie/show name, click **Run**. Each file gets encoded to TBX's
   broadcast MP4 profile and named the way TBX expects (`Title (Year).mp4` /
   `Show SxxExx.mp4`), one after another, straight into a local output folder.
-- **Rip DVD** - insert a DVD you own, scan it, pick which titles to keep,
-  click **Run**. Same encode profile, same output folder, just sourced from a
-  disc instead of files you already have. Linux only (needs `dvdbackup`/
-  `lsdvd`) - this tab disables itself automatically if those aren't present.
+- **Rip DVD** - insert a DVD you own, pick a drive, scan it, pick which
+  titles to keep, click **Run**. Same encode profile, same output folder,
+  just sourced from a disc instead of files you already have. Works on
+  Windows, macOS, and Linux via MakeMKV; Linux also has a `dvdbackup`/`lsdvd`
+  option. This tab disables itself automatically if neither is available.
 
 This app has **no network awareness of TBX at all**. It never talks to your
 TBX box, never uploads anything, doesn't need an API key or your TBX's
@@ -24,8 +25,9 @@ individuals, but is a conscious tradeoff, not an oversight.
 
 ## One-time setup
 
-`ffmpeg` is required for both modes. DVD ripping additionally needs
-`dvdbackup`, `lsdvd`, and (for CSS-protected discs) `libdvdcss2`.
+`ffmpeg` is required for both modes. DVD ripping additionally needs either
+MakeMKV (any platform), or on Linux, `dvdbackup` + `lsdvd` +
+(for CSS-protected discs) `libdvdcss2`.
 
 **Linux:**
 ```bash
@@ -33,11 +35,19 @@ sudo apt update
 sudo apt install ffmpeg dvdbackup lsdvd libdvd-pkg eject
 sudo dpkg-reconfigure libdvd-pkg   # builds/installs libdvdcss2 from source; accept defaults
 ```
+MakeMKV is optional here too (see "MakeMKV" section below) - useful for
+discs `dvdbackup` can't handle, or if you'd rather not build `libdvdcss2`.
 
 **Windows:** install `ffmpeg` (e.g. `winget install ffmpeg`) and make sure
-it's on your `PATH`. The Convert File tab works; Rip DVD is unavailable.
+it's on your `PATH`, then install MakeMKV from
+[makemkv.com](https://www.makemkv.com/) - the app looks for it on `PATH`
+first, then MakeMKV's own default install locations
+(`C:\Program Files (x86)\MakeMKV\` or `C:\Program Files\MakeMKV\`), so no
+extra configuration is usually needed. Both Convert File and Rip DVD work;
+Rip DVD only offers the MakeMKV ripper (`dvdbackup` has no Windows build).
 
-**macOS:** `brew install ffmpeg`. Convert File works; Rip DVD is unavailable.
+**macOS:** `brew install ffmpeg`, then install MakeMKV from makemkv.com the
+same way as Windows above. Both tabs work.
 
 ## Running it
 
@@ -54,26 +64,32 @@ or `python3 -m tbx_converter_wizard.gui` directly (Windows: `python -m tbx_conve
    that number, in the order you selected them). Click **Run**. Progress
    streams into the log pane; each finished file lands in the output folder
    shown at the top of the window.
-2. **Rip DVD** (Linux only): insert a disc, click **Scan Disc**, pick Movie/TV
-   mode and fill in the name, toggle any title's **Include** cell on/off,
-   click **Run**. Same output folder as Convert File. The disc auto-ejects
-   when done.
+2. **Rip DVD**: pick a drive from the **Drive** dropdown (click
+   **Refresh Drives** if you plugged one in after opening the app or just
+   inserted a disc), click **Scan Disc**, pick Movie/TV mode and fill in the
+   name, toggle any title's **Include** cell on/off, click **Run**. Same
+   output folder as Convert File. With the `dvdbackup` ripper (Linux only)
+   the disc auto-ejects when done; with `makemkv` (all platforms) you'll
+   need to eject it yourself - MakeMKV doesn't expose an eject command.
 3. Click **Change...** next to the output folder to pick a different
    destination - it's remembered for next time.
 
-### MakeMKV fallback (DVD ripping only)
+### MakeMKV (DVD ripping only)
 
-Most commercial DVD protection is plain CSS, which the default `dvdbackup`
-path (via `libdvdcss2`) handles. If a specific disc fails to rip with
-`dvdbackup` (some discs use protection beyond plain CSS - ARccOS, RipGuard,
-newer CSS variants), install MakeMKV manually:
+MakeMKV is the only ripper on Windows/macOS, and an alternative to
+`dvdbackup` on Linux for discs that use protection beyond plain CSS
+(ARccOS, RipGuard, newer CSS variants, or just discs `dvdbackup` reports as
+unreadable). Install it from MakeMKV's own site (Linux: build
+`makemkv-oss` + `makemkv-bin` from their forever-free beta; Windows/macOS:
+the regular installer). In the app, switch the **Ripper** dropdown to
+`makemkv` before scanning/ripping.
 
-1. Download the current Linux forever-free beta build from MakeMKV's own
-   site and follow its build/install instructions (`makemkv-oss` +
-   `makemkv-bin`; needs a periodically-renewed free beta key -
-   not handled by this app).
-2. In the app, switch the **Ripper** dropdown to `makemkv` before scanning/
-   burning that disc.
+**Troubleshooting a rip that fails with an unclear error:** MakeMKV's free
+build requires a periodically-renewed license key. An expired key can make
+a rip fail with a `makemkvcon` error that doesn't obviously say "your key
+expired." If a rip fails and the reason isn't clear from the app's log
+pane, check MakeMKV's forum/site for a current key before assuming
+something else is wrong.
 
 ## Running the tests
 

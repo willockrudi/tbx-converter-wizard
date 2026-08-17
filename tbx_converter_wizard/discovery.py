@@ -1,6 +1,10 @@
+import csv
+import shutil
 import subprocess
+import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from pathlib import Path
 
 
 class DiscoveryError(RuntimeError):
@@ -11,6 +15,43 @@ class DiscoveryError(RuntimeError):
 class Title:
     number: int
     length_seconds: float
+
+
+@dataclass
+class Drive:
+    """One optical drive, as MakeMKV itself sees it - index is MakeMKV's
+    own drive index, reused verbatim by discover_titles_makemkv() and
+    rip.py's _extract_makemkv() for both info and mkv commands."""
+    index: int
+    name: str
+    device_path: str
+    disc_title: str = ""
+    disc_present: bool = False
+
+
+# MakeMKV's Windows installer doesn't add itself to PATH by default -
+# these are its own default install locations, checked as a fallback.
+_WINDOWS_MAKEMKV_DIRS = (
+    r"C:\Program Files (x86)\MakeMKV",
+    r"C:\Program Files\MakeMKV",
+)
+
+
+def find_makemkvcon() -> str | None:
+    """Locate makemkvcon(64).exe - PATH first, then (on Windows) MakeMKV's
+    own default install directories. Shared by discovery.py and rip.py so
+    the search logic lives in exactly one place."""
+    for name in ("makemkvcon64.exe", "makemkvcon.exe", "makemkvcon"):
+        found = shutil.which(name)
+        if found:
+            return found
+    if sys.platform == "win32":
+        for base in _WINDOWS_MAKEMKV_DIRS:
+            for name in ("makemkvcon64.exe", "makemkvcon.exe"):
+                candidate = Path(base) / name
+                if candidate.is_file():
+                    return str(candidate)
+    return None
 
 
 def discover_titles(device: str) -> list[Title]:
@@ -44,3 +85,118 @@ def discover_titles(device: str) -> list[Title]:
         raise DiscoveryError(f"no titles found on {device} - blank, unreadable, or no disc inserted")
 
     return titles
+
+
+# ── MakeMKV-based discovery (cross-platform - Windows and Linux alike) ─────
+
+# DRV: line status codes, per MakeMKV's robot-mode output.
+_DRV_STATUS_NOT_ATTACHED = 256
+_DRV_STATUS_DISC_PRESENT = (2, 3)  # closed (has disc) / loading
+
+
+def list_makemkv_drives() -> list[Drive]:
+    """Enumerate optical drives via MakeMKV's own robot-mode scan - this
+    is what replaces Windows-native drive enumeration (no ctypes/wmi/
+    win32api needed): MakeMKV already knows how to list every optical
+    drive on the system, on any platform, including drive letters."""
+    makemkvcon = find_makemkvcon()
+    if makemkvcon is None:
+        raise DiscoveryError("makemkvcon not found - install MakeMKV, see README")
+    try:
+        result = subprocess.run(
+            [makemkvcon, "-r", "--cache=1", "info", "disc:9999"],
+            capture_output=True, text=True, errors="replace", timeout=30,
+        )
+    except FileNotFoundError as exc:
+        raise DiscoveryError("makemkvcon not found - install MakeMKV, see README") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise DiscoveryError("makemkvcon timed out scanning for drives") from exc
+
+    return _parse_drv_lines(result.stdout)
+
+
+def _parse_drv_lines(text: str) -> list[Drive]:
+    """Pure parsing, factored out from list_makemkv_drives() so it's
+    testable against canned text without a real drive/subprocess.
+
+    DRV: line shape (7 fields): index, status, a constant, disc-type
+    flags, drive/model name, media title label (empty if no disc), OS
+    device/drive-letter path. Fields may be quoted (model/media names can
+    contain commas) - csv.reader, not a naive .split(","), handles that.
+    """
+    drives = []
+    for line in text.splitlines():
+        if not line.startswith("DRV:"):
+            continue
+        fields = next(csv.reader([line[len("DRV:"):]]))
+        if len(fields) < 7:
+            continue
+        try:
+            index, status = int(fields[0]), int(fields[1])
+        except ValueError:
+            continue
+        if status == _DRV_STATUS_NOT_ATTACHED:
+            continue
+        drives.append(Drive(
+            index=index,
+            name=fields[4],
+            device_path=fields[6],
+            disc_title=fields[5],
+            disc_present=status in _DRV_STATUS_DISC_PRESENT,
+        ))
+    return drives
+
+
+def discover_titles_makemkv(drive_index: int) -> list[Title]:
+    """MakeMKV equivalent of discover_titles() - same Title(number,
+    length_seconds) shape, sourced from `makemkvcon info` instead of
+    lsdvd. drive_index comes from list_makemkv_drives()."""
+    makemkvcon = find_makemkvcon()
+    if makemkvcon is None:
+        raise DiscoveryError("makemkvcon not found - install MakeMKV, see README")
+    try:
+        result = subprocess.run(
+            [makemkvcon, "-r", "info", f"disc:{drive_index}"],
+            capture_output=True, text=True, errors="replace", timeout=60,
+        )
+    except FileNotFoundError as exc:
+        raise DiscoveryError("makemkvcon not found - install MakeMKV, see README") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise DiscoveryError(f"makemkvcon timed out reading drive {drive_index} - is a disc inserted?") from exc
+
+    titles = _parse_tinfo_lines(result.stdout)
+    if not titles:
+        raise DiscoveryError(f"no titles found on drive {drive_index} - blank, unreadable, or no disc inserted")
+    return titles
+
+
+def _parse_tinfo_lines(text: str) -> list[Title]:
+    """Pure parsing, factored out for testing. TINFO:title_id,code,value -
+    code 9 is duration (H:MM:SS). MakeMKV title ids are 0-indexed;
+    converted to 1-indexed here to match lsdvd's convention, which the
+    rest of the app (naming.py, movie/TV sort order, the GUI's Title#
+    column) already assumes everywhere - rip.py's _extract_makemkv()
+    already does the inverse conversion back to 0-indexed."""
+    TINFO_DURATION_CODE = 9
+    lengths: dict[int, float] = {}
+    for line in text.splitlines():
+        if not line.startswith("TINFO:"):
+            continue
+        fields = next(csv.reader([line[len("TINFO:"):]]))
+        if len(fields) < 3:
+            continue
+        try:
+            title_id, code = int(fields[0]), int(fields[1])
+        except ValueError:
+            continue
+        if code == TINFO_DURATION_CODE:
+            try:
+                lengths[title_id] = _parse_hms(fields[-1])
+            except ValueError:
+                continue
+    return [Title(number=tid + 1, length_seconds=secs) for tid, secs in sorted(lengths.items())]
+
+
+def _parse_hms(value: str) -> float:
+    h, m, s = value.split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)

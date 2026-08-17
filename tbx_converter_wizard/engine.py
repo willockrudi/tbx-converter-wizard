@@ -68,19 +68,28 @@ def rip_and_encode(device: str, item: PlannedTitle, ripper: str,
 
     try:
         log(f"Extracting title {item.title_number} ({item.length_seconds / 60:.1f} min)...")
-        vob_dir = rip.extract_title(device, item.title_number, scratch_dir, ripper)
-
-        if should_cancel():
-            raise RipCancelled()
-
-        concat_path = scratch_dir / "concat.txt"
-        encode.build_concat_file(vob_dir, concat_path)
+        source = rip.extract_title(device, item.title_number, scratch_dir, ripper)
 
         if should_cancel():
             raise RipCancelled()
 
         log(f"Encoding -> {item.filename}")
-        encode.encode_concat_to_output(concat_path, final_path)
+        if ripper == "makemkv":
+            # extract_title() already returns a single .mkv file for this
+            # ripper (not a VOB directory) - feed it straight to the same
+            # single-file encode path the Convert File tab uses. Previously
+            # this always fell through to the VOB-concat branch below
+            # regardless of ripper, so selecting makemkv here silently
+            # failed with "no VOB files found" - never actually worked.
+            encode.encode_file_to_output(source, final_path)
+        else:
+            concat_path = scratch_dir / "concat.txt"
+            encode.build_concat_file(source, concat_path)
+
+            if should_cancel():
+                raise RipCancelled()
+
+            encode.encode_concat_to_output(concat_path, final_path)
 
         log(f"Done: {final_path}")
         return final_path
@@ -106,8 +115,16 @@ def rip_disc(device: str, items: list[PlannedTitle], ripper: str,
         except (rip.RipError, encode.EncodeError) as exc:
             log(f"FAILED: {exc}")
 
-    rip.eject(device)
-    log(f"Ejected {device}.")
+    if ripper == "dvdbackup":
+        rip.eject(device)
+        log(f"Ejected {device}.")
+    else:
+        # makemkv's `device` is a MakeMKV drive index, not an OS device
+        # path - meaningless to `eject`, and MakeMKV itself exposes no
+        # eject command. dvdbackup only exists on Linux anyway, so this
+        # branch is also naturally a no-op on Windows without needing a
+        # sys.platform check.
+        log("Rip finished - eject the disc manually.")
 
     return results
 

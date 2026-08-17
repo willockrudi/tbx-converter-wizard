@@ -2,6 +2,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import discovery
+
 
 class RipError(RuntimeError):
     pass
@@ -47,8 +49,16 @@ def _extract_dvdbackup(device: str, title_number: int, scratch_dir: Path) -> Pat
 
 
 def _extract_makemkv(device: str, title_number: int, scratch_dir: Path) -> Path:
-    # makemkvcon titles are 0-indexed; lsdvd's are 1-indexed.
-    cmd = ["makemkvcon", "mkv", f"dev:{device}", str(title_number - 1), str(scratch_dir)]
+    # device is a MakeMKV drive index here (see discovery.list_makemkv_drives()),
+    # not an OS device path - disc:<index> is MakeMKV's own addressing, which
+    # works identically cross-platform (unlike a raw /dev/sr0-style path).
+    # makemkvcon titles are 0-indexed; discovery.discover_titles_makemkv()
+    # converts to 1-indexed to match lsdvd's convention, so undo that here.
+    makemkvcon = discovery.find_makemkvcon()
+    if makemkvcon is None:
+        raise RipError("makemkvcon not found - MakeMKV must be installed manually, see README")
+
+    cmd = [makemkvcon, "mkv", f"disc:{device}", str(title_number - 1), str(scratch_dir)]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=3600)
     except FileNotFoundError as exc:
@@ -71,4 +81,14 @@ def cleanup_scratch(scratch_dir: Path) -> None:
 
 
 def eject(device: str) -> None:
-    subprocess.run(["eject", device], capture_output=True)
+    """Best-effort only - a missing `eject` binary (or any other OSError)
+    must not blow up the caller. Previously uncaught here, this would
+    propagate out of engine.rip_disc() and get caught by gui.py's
+    outermost exception handler, which logged the whole rip - including
+    already-successful titles - as "Rip failed unexpectedly". Only ever
+    called for the dvdbackup ripper (see engine.rip_disc()), so `device`
+    here is always a real OS device path, never a MakeMKV drive index."""
+    try:
+        subprocess.run(["eject", device], capture_output=True)
+    except OSError:
+        pass

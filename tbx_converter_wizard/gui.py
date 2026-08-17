@@ -20,7 +20,14 @@ from . import config, discovery, encode, engine
 
 APP_TITLE = "TBX Converter Wizard"
 
-DVD_TOOLS_AVAILABLE = shutil.which("dvdbackup") is not None and shutil.which("lsdvd") is not None
+
+def _dvdbackup_available() -> bool:
+    return shutil.which("dvdbackup") is not None and shutil.which("lsdvd") is not None
+
+
+# Either backend counts - dvdbackup+lsdvd (Linux only) or MakeMKV (any
+# platform, including Windows, where it's the only option available).
+DVD_TOOLS_AVAILABLE = _dvdbackup_available() or discovery.find_makemkvcon() is not None
 
 
 def _probe_duration_seconds(path: Path) -> float:
@@ -57,6 +64,7 @@ class ConverterApp(tk.Tk):
         self._need_recompute = False
         self._need_scan_button_reset = False
         self._need_worker_done = False
+        self._need_drive_refresh = False
         self._scanning = False
 
         self.output_dir = tk.StringVar(value=str(config.OUTPUT_DIR))
@@ -64,6 +72,8 @@ class ConverterApp(tk.Tk):
         self._build_widgets()
         self._on_convert_mode_change()
         self._on_dvd_mode_change()
+        if DVD_TOOLS_AVAILABLE:
+            self._refresh_drives()
         self.after(200, self._poll_worker_state)
 
     # -- top-level layout -----------------------------------------------------
@@ -274,15 +284,17 @@ class ConverterApp(tk.Tk):
         if not DVD_TOOLS_AVAILABLE:
             ttk.Label(
                 parent,
-                text="DVD ripping needs dvdbackup and lsdvd, which are Linux-only "
-                     "and weren't found on this system.\nUse the Convert File tab "
-                     "instead, or run this app on Linux to rip discs.",
+                text="DVD ripping needs MakeMKV (any platform, including Windows) "
+                     "or dvdbackup + lsdvd (Linux only), and none were found on "
+                     "this system.\nInstall MakeMKV from makemkv.com and restart "
+                     "the app, or use the Convert File tab instead.",
                 foreground="#a33", wraplength=600, justify="left",
             ).pack(padx=16, pady=16, anchor="w")
             return
 
         self.items: list[engine.PlannedTitle] = []
-        self.device = tk.StringVar(value=self._detect_device())
+        self._drive_options: dict[str, str] = {}  # label -> device string (path or MakeMKV drive index)
+        self.device = tk.StringVar()
         self.dvd_mode = tk.StringVar(value="movie")
         self.movie_title = tk.StringVar()
         self.movie_year = tk.StringVar()
@@ -290,17 +302,26 @@ class ConverterApp(tk.Tk):
         self.tv_season = tk.StringVar()
         self.tv_start_episode = tk.StringVar()
         self.min_minutes = tk.StringVar(value=str(config.DEFAULT_MIN_MINUTES["movie"]))
-        self.ripper = tk.StringVar(value="dvdbackup")
+        has_dvdbackup = _dvdbackup_available()
+        ripper_values = ["dvdbackup", "makemkv"] if has_dvdbackup else ["makemkv"]
+        self.ripper = tk.StringVar(value=ripper_values[0])
 
         top = ttk.Frame(parent)
         top.pack(fill="x", **pad)
         ttk.Label(top, text="Drive:").pack(side="left")
-        ttk.Entry(top, textvariable=self.device, width=14).pack(side="left", padx=4)
+        self.drive_combo = ttk.Combobox(top, textvariable=self.device, width=40, state="readonly")
+        self.drive_combo.pack(side="left", padx=4)
+        ttk.Button(top, text="Refresh Drives", command=self._refresh_drives).pack(side="left", padx=4)
         self.scan_button = ttk.Button(top, text="Scan Disc", command=self._on_scan)
         self.scan_button.pack(side="left", padx=4)
         ttk.Label(top, text="Ripper:").pack(side="left", padx=(16, 0))
-        ttk.Combobox(top, textvariable=self.ripper, values=["dvdbackup", "makemkv"],
-                     width=10, state="readonly").pack(side="left", padx=4)
+        ripper_combo = ttk.Combobox(top, textvariable=self.ripper, values=ripper_values,
+                                     width=10, state="readonly")
+        ripper_combo.pack(side="left", padx=4)
+        # ttk.Combobox has no live command= for the textvariable itself -
+        # the two rippers enumerate disjoint drive sets, so switching
+        # ripper must re-scan drives.
+        ripper_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_drives())
 
         mode_frame = ttk.LabelFrame(parent, text="Mode")
         mode_frame.pack(fill="x", **pad)
@@ -359,9 +380,31 @@ class ConverterApp(tk.Tk):
                                              state="disabled")
         self.dvd_cancel_button.pack(side="left", padx=4)
 
-    def _detect_device(self) -> str:
-        candidates = sorted(Path("/dev").glob("sr*"))
-        return str(candidates[0]) if candidates else "/dev/sr0"
+    def _refresh_drives(self):
+        """Populate the drive dropdown for whichever ripper is currently
+        selected. Runs on a background thread since MakeMKV's own drive
+        scan shells out to makemkvcon and can take a few seconds."""
+        ripper = self.ripper.get()
+        self.drive_combo.configure(state="disabled")
+
+        def work():
+            options: dict[str, str] = {}
+            try:
+                if ripper == "dvdbackup":
+                    for path in sorted(Path("/dev").glob("sr*")):
+                        options[str(path)] = str(path)
+                else:
+                    for d in discovery.list_makemkv_drives():
+                        label = f"{d.device_path or f'Drive {d.index}'} - {d.name}"
+                        if d.disc_title:
+                            label += f" ({d.disc_title})"
+                        options[label] = str(d.index)
+            except discovery.DiscoveryError as exc:
+                self._log(f"Drive scan failed: {exc}")
+            self._drive_options = options
+            self._need_drive_refresh = True
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _on_dvd_mode_change(self):
         if not DVD_TOOLS_AVAILABLE:
@@ -411,12 +454,13 @@ class ConverterApp(tk.Tk):
         self._scanning = True
         self.scan_button.configure(state="disabled")
 
-        device = self.device.get().strip()
+        device = self._drive_options.get(self.device.get(), self.device.get().strip())
+        ripper = self.ripper.get()
         threshold = self._min_minutes() * 60  # read Tk vars on the main thread only
         self.tree.delete(*self.tree.get_children())
         self.items = []
         self.rip_button.configure(state="disabled")
-        self._log(f"Scanning {device} ...")
+        self._log(f"Scanning {self.device.get()} ...")
 
         def work():
             # Safety net: any unexpected exception here must still reach the
@@ -425,7 +469,10 @@ class ConverterApp(tk.Tk):
             # during testing - an uncaught UnicodeDecodeError silently killed
             # this thread and left Scan Disc disabled forever).
             try:
-                titles = discovery.discover_titles(device)
+                if ripper == "makemkv":
+                    titles = discovery.discover_titles_makemkv(int(device))
+                else:
+                    titles = discovery.discover_titles(device)
                 self.items = [
                     engine.PlannedTitle(t.number, t.length_seconds,
                                          include=t.length_seconds >= threshold)
@@ -477,7 +524,7 @@ class ConverterApp(tk.Tk):
         if not included:
             return
 
-        device = self.device.get().strip()
+        device = self._drive_options.get(self.device.get(), self.device.get().strip())
         ripper = self.ripper.get()
         self.cancel_event.clear()
         self.rip_button.configure(state="disabled")
@@ -519,6 +566,12 @@ class ConverterApp(tk.Tk):
             self._need_scan_button_reset = False
             self._scanning = False
             self.scan_button.configure(state="normal")
+
+        if self._need_drive_refresh:
+            self._need_drive_refresh = False
+            self.drive_combo.configure(state="readonly", values=list(self._drive_options))
+            if self._drive_options and self.device.get() not in self._drive_options:
+                self.device.set(next(iter(self._drive_options)))
 
         if self._need_recompute:
             self._need_recompute = False
