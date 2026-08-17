@@ -21,13 +21,17 @@ REPO_ROOT = Path(SPECPATH).parent
 ICON_PNG = REPO_ROOT / "packaging" / "icons" / "icon.png"
 ICON_ICO = REPO_ROOT / "packaging" / "icons" / "icon.ico"
 ICON_ICNS = REPO_ROOT / "packaging" / "icons" / "icon.icns"  # built by the macOS CI job; may not exist locally
+VERSION_INFO = REPO_ROOT / "packaging" / "version_info.txt"
 
 if sys.platform == "win32":
     icon_path = str(ICON_ICO) if ICON_ICO.exists() else None
+    version_path = str(VERSION_INFO) if VERSION_INFO.exists() else None
 elif sys.platform == "darwin":
     icon_path = str(ICON_ICNS) if ICON_ICNS.exists() else None
+    version_path = None  # version resource is a Windows-only PE concept
 else:
     icon_path = None  # Linux executables don't embed an icon this way
+    version_path = None
 
 a = Analysis(
     [str(REPO_ROOT / "run_entry.py")],
@@ -67,6 +71,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=icon_path,
+    version=version_path,
 )
 
 if sys.platform == "darwin":
