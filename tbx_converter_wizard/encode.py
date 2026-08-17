@@ -42,7 +42,13 @@ def _encode(input_args: list[str], source_desc: str, final_path: Path) -> None:
     tmp_path = final_path.with_name(f".{final_path.name}.converting.mp4")
     cmd = _ffmpeg_cmd(input_args, tmp_path)
 
-    result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    except FileNotFoundError as exc:
+        raise EncodeError(
+            "ffmpeg not found. Install ffmpeg and make sure it's on your PATH, "
+            "then restart the app."
+        ) from exc
     if result.returncode != 0:
         tmp_path.unlink(missing_ok=True)
         raise EncodeError(f"ffmpeg failed encoding {source_desc}: {result.stderr.strip()[-800:]}")
