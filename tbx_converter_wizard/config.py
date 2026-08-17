@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 # Local-only app — no TBX network awareness at all. Converted files land in
@@ -44,3 +46,13 @@ ENCODE_PROFILE = {
 }
 
 DEFAULT_MIN_MINUTES = {"movie": 40, "tv": 15}
+
+# Windows only: stop every helper we shell out to (ffmpeg, ffprobe,
+# makemkvcon, dvdbackup) from opening its own console window. The packaged
+# build is windowed - console=False in the PyInstaller spec - so without
+# this, each spawn flashes a black box over the GUI, once per encode and
+# once per probed file. 0 everywhere else; subprocess accepts
+# creationflags=0 as "no special flags" on every platform, and the
+# CREATE_NO_WINDOW attribute itself only exists on Windows (the ternary
+# below never touches it elsewhere).
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0

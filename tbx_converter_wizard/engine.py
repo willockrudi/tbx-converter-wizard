@@ -81,7 +81,7 @@ def rip_and_encode(device: str, item: PlannedTitle, ripper: str,
             # this always fell through to the VOB-concat branch below
             # regardless of ripper, so selecting makemkv here silently
             # failed with "no VOB files found" - never actually worked.
-            encode.encode_file_to_output(source, final_path)
+            encode.encode_file_to_output(source, final_path, log, item.length_seconds)
         else:
             concat_path = scratch_dir / "concat.txt"
             encode.build_concat_file(source, concat_path)
@@ -89,7 +89,7 @@ def rip_and_encode(device: str, item: PlannedTitle, ripper: str,
             if should_cancel():
                 raise RipCancelled()
 
-            encode.encode_concat_to_output(concat_path, final_path)
+            encode.encode_concat_to_output(concat_path, final_path, log, item.length_seconds)
 
         log(f"Done: {final_path}")
         return final_path
@@ -130,11 +130,16 @@ def rip_disc(device: str, items: list[PlannedTitle], ripper: str,
 
 
 def convert_file(input_path: Path, filename: str,
-                  log: Callable[[str], None]) -> Path:
+                  log: Callable[[str], None],
+                  total_seconds: float = 0.0) -> Path:
     """Convert-file mode: encode one arbitrary local file to the tbx_broadcast
-    profile, named per TBX's conventions, dropped into config.OUTPUT_DIR."""
+    profile, named per TBX's conventions, dropped into config.OUTPUT_DIR.
+
+    total_seconds is the source's duration, already probed by the GUI for its
+    movie-mode ordering heuristic - reused here purely so the encode can report
+    a percentage. 0 (probe failed) just downgrades that to elapsed minutes."""
     final_path = config.OUTPUT_DIR / filename
     log(f"Encoding -> {filename}")
-    encode.encode_file_to_output(input_path, final_path)
+    encode.encode_file_to_output(input_path, final_path, log, total_seconds)
     log(f"Done: {final_path}")
     return final_path

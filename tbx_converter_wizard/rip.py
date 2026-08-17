@@ -2,7 +2,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from . import discovery
+from . import config, discovery
 
 
 class RipError(RuntimeError):
@@ -29,7 +29,8 @@ def _extract_dvdbackup(device: str, title_number: int, scratch_dir: Path) -> Pat
         "-t", str(title_number), "-n", "disc",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=3600)
+        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                                timeout=3600, creationflags=config.NO_WINDOW)
     except FileNotFoundError as exc:
         raise RipError("dvdbackup not found - install with: sudo apt install dvdbackup") from exc
 
@@ -60,7 +61,8 @@ def _extract_makemkv(device: str, title_number: int, scratch_dir: Path) -> Path:
 
     cmd = [makemkvcon, "mkv", f"disc:{device}", str(title_number - 1), str(scratch_dir)]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=3600)
+        result = subprocess.run(cmd, capture_output=True, text=True, errors="replace",
+                                timeout=3600, creationflags=config.NO_WINDOW)
     except FileNotFoundError as exc:
         raise RipError(
             "makemkvcon not found - MakeMKV must be installed manually, see README"
@@ -89,6 +91,7 @@ def eject(device: str) -> None:
     called for the dvdbackup ripper (see engine.rip_disc()), so `device`
     here is always a real OS device path, never a MakeMKV drive index."""
     try:
-        subprocess.run(["eject", device], capture_output=True)
+        subprocess.run(["eject", device], capture_output=True,
+                       creationflags=config.NO_WINDOW)
     except OSError:
         pass

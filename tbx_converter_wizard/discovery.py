@@ -6,6 +6,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import config
+
 
 class DiscoveryError(RuntimeError):
     pass
@@ -59,6 +61,7 @@ def discover_titles(device: str) -> list[Title]:
         result = subprocess.run(
             ["lsdvd", "-x", "-Ox", device],
             capture_output=True, text=True, errors="replace", timeout=60,
+            creationflags=config.NO_WINDOW,
         )
     except FileNotFoundError as exc:
         raise DiscoveryError("lsdvd not found - install with: sudo apt install lsdvd") from exc
@@ -106,6 +109,7 @@ def list_makemkv_drives() -> list[Drive]:
         result = subprocess.run(
             [makemkvcon, "-r", "--cache=1", "info", "disc:9999"],
             capture_output=True, text=True, errors="replace", timeout=30,
+            creationflags=config.NO_WINDOW,
         )
     except FileNotFoundError as exc:
         raise DiscoveryError("makemkvcon not found - install MakeMKV, see README") from exc
@@ -174,6 +178,7 @@ def discover_titles_makemkv(drive_index: int) -> list[Title]:
         result = subprocess.run(
             [makemkvcon, "-r", "info", f"disc:{drive_index}"],
             capture_output=True, text=True, errors="replace", timeout=60,
+            creationflags=config.NO_WINDOW,
         )
     except FileNotFoundError as exc:
         raise DiscoveryError("makemkvcon not found - install MakeMKV, see README") from exc

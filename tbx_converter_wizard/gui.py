@@ -40,6 +40,7 @@ def _probe_duration_seconds(path: Path) -> float:
             ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
              "-of", "csv=p=0", str(path)],
             capture_output=True, text=True, timeout=15,
+            creationflags=config.NO_WINDOW,
         )
         return float(out.stdout.strip())
     except Exception:
@@ -66,6 +67,11 @@ class ConverterApp(tk.Tk):
         self._need_worker_done = False
         self._need_drive_refresh = False
         self._scanning = False
+        # Last drive-scan failure, kept so it can be repeated when the user
+        # actually tries to scan a disc. The message is logged once when the
+        # scan fails - typically at startup, where it scrolls away long
+        # before anyone clicks Scan Disc and wonders why nothing works.
+        self._last_drive_error: str | None = None
 
         self.output_dir = tk.StringVar(value=str(config.OUTPUT_DIR))
 
@@ -174,6 +180,17 @@ class ConverterApp(tk.Tk):
                                                  command=self._on_cancel, state="disabled")
         self.convert_cancel_button.pack(side="left", padx=4)
 
+        # Keep the Output filename column in step with what's typed. Without
+        # this, filenames were only ever recomputed on a mode-radio click or
+        # when a file-probe finished - so the normal order of operations
+        # (choose files, then type the title) left the preview, and the actual
+        # output, frozen on the "Untitled (0)" fallback from before anything
+        # was typed. Registered last, once every widget above exists, since a
+        # trace can fire as soon as it's attached.
+        for var in (self.convert_title, self.convert_year, self.convert_show,
+                    self.convert_season, self.convert_start_episode):
+            var.trace_add("write", lambda *_: self._recompute_convert())
+
     def _on_convert_mode_change(self):
         if self.convert_mode.get() == "movie":
             self.convert_tv_frame.pack_forget()
@@ -248,6 +265,13 @@ class ConverterApp(tk.Tk):
         if not self.convert_items:
             return
 
+        # Authoritative recompute: the live traces above keep the preview
+        # current, but Run must never depend on a trace having fired - paste,
+        # IME input and programmatic sets all reach the entries by different
+        # routes. Cheap, and it makes "what you see is what gets written" a
+        # property of Run itself rather than of the preview machinery.
+        self._recompute_convert()
+
         self.cancel_event.clear()
         self.convert_run_button.configure(state="disabled")
         self.convert_cancel_button.configure(state="normal")
@@ -264,7 +288,8 @@ class ConverterApp(tk.Tk):
                     if not item.filename:
                         continue
                     try:
-                        engine.convert_file(path, item.filename, self._log)
+                        engine.convert_file(path, item.filename, self._log,
+                                             item.length_seconds)
                     except encode.EncodeError as exc:
                         self._log(f"FAILED: {exc}")
                 self._log("--- conversion finished ---")
@@ -380,6 +405,13 @@ class ConverterApp(tk.Tk):
                                              state="disabled")
         self.dvd_cancel_button.pack(side="left", padx=4)
 
+        # Same live-preview traces as the Convert File tab. This tab could at
+        # least be nudged into recomputing via the Apply button next to the
+        # minimum-length box, which is not a thing anyone would guess.
+        for var in (self.movie_title, self.movie_year, self.tv_show,
+                    self.tv_season, self.tv_start_episode):
+            var.trace_add("write", lambda *_: self._recompute_dvd())
+
     def _refresh_drives(self):
         """Populate the drive dropdown for whichever ripper is currently
         selected. Runs on a background thread since MakeMKV's own drive
@@ -400,11 +432,38 @@ class ConverterApp(tk.Tk):
                             label += f" ({d.disc_title})"
                         options[label] = str(d.index)
             except discovery.DiscoveryError as exc:
+                self._last_drive_error = str(exc)
                 self._log(f"Drive scan failed: {exc}")
+            else:
+                self._last_drive_error = None
             self._drive_options = options
             self._need_drive_refresh = True
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _resolve_device(self) -> str | None:
+        """Map the drive dropdown's display label back to the device string the
+        selected ripper actually needs: an OS path for dvdbackup, a MakeMKV
+        drive index for makemkv.
+
+        Returns None when the dropdown is empty or stale, which is the normal
+        state after a failed drive scan (an expired MakeMKV build, say). That
+        used to fall through as an empty string and surface from deep inside
+        the scan thread as a bare `ValueError: invalid literal for int()` -
+        technically accurate, entirely unhelpful."""
+        device = self._drive_options.get(self.device.get(), "").strip()
+        if not device:
+            return None
+        if self.ripper.get() == "makemkv" and not device.isdigit():
+            return None
+        return device
+
+    def _no_drive_message(self) -> str:
+        msg = ("No drive selected.\n\nClick Refresh Drives, then pick one from the "
+               "Drive dropdown.")
+        if self._last_drive_error:
+            msg += f"\n\nThe last drive scan failed with:\n{self._last_drive_error}"
+        return msg
 
     def _on_dvd_mode_change(self):
         if not DVD_TOOLS_AVAILABLE:
@@ -451,10 +510,17 @@ class ConverterApp(tk.Tk):
     def _on_scan(self):
         if self._scanning:
             return  # ignore repeat clicks/synthetic double-fires while a scan is in flight
+
+        # Checked before the button is disabled, so bailing out here can't
+        # leave Scan Disc greyed out with no scan running to re-enable it.
+        device = self._resolve_device()
+        if device is None:
+            messagebox.showerror(APP_TITLE, self._no_drive_message())
+            return
+
         self._scanning = True
         self.scan_button.configure(state="disabled")
 
-        device = self._drive_options.get(self.device.get(), self.device.get().strip())
         ripper = self.ripper.get()
         threshold = self._min_minutes() * 60  # read Tk vars on the main thread only
         self.tree.delete(*self.tree.get_children())
@@ -520,11 +586,19 @@ class ConverterApp(tk.Tk):
             messagebox.showerror(APP_TITLE, msg)
             return
 
+        device = self._resolve_device()
+        if device is None:
+            messagebox.showerror(APP_TITLE, self._no_drive_message())
+            return
+
+        # Same reason as the Convert File tab: never rip with filenames left
+        # over from before the title/year fields were filled in.
+        self._recompute_dvd()
+
         included = [it for it in self.items if it.include]
         if not included:
             return
 
-        device = self._drive_options.get(self.device.get(), self.device.get().strip())
         ripper = self.ripper.get()
         self.cancel_event.clear()
         self.rip_button.configure(state="disabled")
